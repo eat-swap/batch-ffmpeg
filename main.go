@@ -5,22 +5,25 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"golang.org/x/sync/semaphore"
 )
 
 const (
-	SrcDir  = "D:/tmp/Music/"
+	SrcDir  = "D:/tmp/Musik/"
 	DstDir  = "D:/tmp/Converted/"
 	ExtList = ".flac .mp3 .ogg .wav .wma"
 	DstExt  = ".opus"
 )
 
 type Task struct {
-	Src string
-	Dst string
+	Src    string
+	Dst    string
+	TaskId int
 }
 
 var (
@@ -29,13 +32,14 @@ var (
 )
 
 func main() {
-	threads := 1 // runtime.NumCPU()
+	threads := runtime.NumCPU()
 	finishSem = semaphore.NewWeighted(int64(threads))
 	fmt.Printf("Using %d threads\n", threads)
 	for i := 0; i < threads; i++ {
 		go executor()
 	}
 
+	taskId := 0
 	filepath.Walk(SrcDir, func(path string, info fs.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return err
@@ -49,14 +53,16 @@ func main() {
 			return nil
 		}
 
-		err = os.MkdirAll(filepath.Dir(DstDir+strings.TrimPrefix(strings.ReplaceAll(path, "\\", "/"), SrcDir)), 0755)
+		dstDir := filepath.Dir(DstDir + strings.TrimPrefix(strings.ReplaceAll(path, "\\", "/"), SrcDir))
+		err = os.MkdirAll(dstDir, 0755)
 		if err != nil {
 			fmt.Println("Failed to create dir:", err)
 			return err
 		}
 
 		// Starts converting
-		taskChan <- Task{path, filepath.Dir(DstDir+path) + "/" + baseName + DstExt}
+		taskId++
+		taskChan <- Task{path, dstDir + "/" + baseName + DstExt, taskId}
 
 		return nil
 	})
@@ -71,7 +77,20 @@ func main() {
 func executor() {
 	finishSem.Acquire(context.Background(), 1)
 	for task := range taskChan {
-		fmt.Printf("Converting: %s -> %s\n", task.Src, task.Dst)
+		fmt.Printf("[%d] Converting: %s\n", task.TaskId, task.Src)
+		cmd := exec.Command("ffmpeg",
+			"-i",
+			task.Src,
+			"-c:a",
+			"libopus",
+			"-b:a",
+			"64k",
+			task.Dst,
+		)
+		err := cmd.Run()
+		if err != nil {
+			fmt.Printf("Failed to convert %s: %s\n", task.Src, err.Error())
+		}
 	}
 	finishSem.Release(1)
 }
